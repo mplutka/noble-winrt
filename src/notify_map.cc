@@ -23,24 +23,24 @@ bool NotifyMap::IsSubscribed(std::string uuid, GattCharacteristic characteristic
 {
     try
     {
-        Key key = { uuid, characteristic.Service().Uuid(), characteristic.Uuid() };
-        return mNotifyMap.find(key) != mNotifyMap.end();
+      Key key = { uuid, characteristic.Service().Uuid(), characteristic.Uuid() };
+      return mNotifyMap.find(key) != mNotifyMap.end();
     }
     catch (...)
     {
-        return false;
+      return false;
     }
 }
 
 void NotifyMap::Unsubscribe(std::string uuid, GattCharacteristic characteristic)
 {
     Key key = { uuid, characteristic.Service().Uuid(), characteristic.Uuid() };
-    auto& it = mNotifyMap.find(key);
+    auto it = mNotifyMap.find(key);
     if (it == mNotifyMap.end())
     {
         return;
     }
-    auto& token = it->second;
+    auto token = it->second;
     characteristic.ValueChanged(token);
     mNotifyMap.erase(key);
 }
@@ -49,7 +49,7 @@ void NotifyMap::Remove(std::string uuid)
 {
     for (auto it = mNotifyMap.begin(); it != mNotifyMap.end();)
     {
-        auto& key = it->first;
+        auto key = it->first;
         if (key.uuid == uuid)
         {
             it = mNotifyMap.erase(it);

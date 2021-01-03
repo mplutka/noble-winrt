@@ -19,7 +19,9 @@ PeripheralWinrt::PeripheralWinrt(uint64_t bluetoothAddress,
     address = formatBluetoothAddress(bluetoothAddress);
     // Random addresses have the two most-significant bits set of the 48-bit address.
     addressType = (bluetoothAddress >= 211106232532992) ? RANDOM : PUBLIC;
-    Update(rssiValue, advertisment, advertismentType);
+    connectable = advertismentType == BluetoothLEAdvertisementType::ConnectableUndirected ||
+        advertismentType == BluetoothLEAdvertisementType::ConnectableDirected;
+    Update(rssiValue, advertisment);
 }
 
 PeripheralWinrt::~PeripheralWinrt()
@@ -30,20 +32,18 @@ PeripheralWinrt::~PeripheralWinrt()
     }
 }
 
-void PeripheralWinrt::Update(const int rssiValue, const BluetoothLEAdvertisement& advertisment,
-                             const BluetoothLEAdvertisementType& advertismentType)
+void PeripheralWinrt::Update(const int rssiValue, const BluetoothLEAdvertisement& advertisment)
 {
     std::string localName = ws2s(advertisment.LocalName().c_str());
     if (!localName.empty())
     {
         name = localName;
+    } else {
+        name = "UNKNOWN " + address;
     }
 
-    connectable = advertismentType == BluetoothLEAdvertisementType::ConnectableUndirected ||
-        advertismentType == BluetoothLEAdvertisementType::ConnectableDirected;
-
     manufacturerData.clear();
-    for (auto& ds : advertisment.DataSections())
+    for (auto ds : advertisment.DataSections())
     {
         if (ds.DataType() == BluetoothLEAdvertisementDataTypes::TxPowerLevel())
         {
@@ -65,7 +65,7 @@ void PeripheralWinrt::Update(const int rssiValue, const BluetoothLEAdvertisement
     }
 
     serviceUuids.clear();
-    for (auto& uuid : advertisment.ServiceUuids())
+    for (auto uuid : advertisment.ServiceUuids())
     {
         serviceUuids.push_back(toStr(uuid));
     }
@@ -89,14 +89,14 @@ void PeripheralWinrt::GetServiceFromDevice(
     if (device.has_value())
     {
         device->GetGattServicesForUuidAsync(serviceUuid, BluetoothCacheMode::Cached)
-            .Completed([=](IAsyncOperation<GattDeviceServicesResult> result, auto& status) {
+            .Completed([=](IAsyncOperation<GattDeviceServicesResult> result, auto status) {
                 if (status == AsyncStatus::Completed)
                 {
-                    auto& services = result.GetResults();
-                    auto& service = services.Services().First();
+                    auto services = result.GetResults();
+                    auto service = services.Services().First();
                     if (service.HasCurrent())
                     {
-                        GattDeviceService& s = service.Current();
+                        GattDeviceService s = service.Current();
                         cachedServices.insert(std::make_pair(serviceUuid, CachedService(s)));
                         callback(s);
                     }
@@ -139,16 +139,16 @@ void PeripheralWinrt::GetCharacteristicFromService(
     std::function<void(std::optional<GattCharacteristic>)> callback)
 {
     service.GetCharacteristicsForUuidAsync(characteristicUuid, BluetoothCacheMode::Cached)
-        .Completed([=](IAsyncOperation<GattCharacteristicsResult> result, auto& status) {
+        .Completed([=](IAsyncOperation<GattCharacteristicsResult> result, auto status) {
             if (status == AsyncStatus::Completed)
             {
-                auto& characteristics = result.GetResults();
-                auto& characteristic = characteristics.Characteristics().First();
+                auto characteristics = result.GetResults();
+                auto characteristic = characteristics.Characteristics().First();
                 if (characteristic.HasCurrent())
                 {
                     winrt::guid serviceUuid = service.Uuid();
                     CachedService& cachedService = cachedServices[serviceUuid];
-                    GattCharacteristic& c = characteristic.Current();
+                    GattCharacteristic c = characteristic.Current();
                     cachedService.characterisitics.insert(
                         std::make_pair(c.Uuid(), CachedCharacteristic(c)));
                     callback(c);
@@ -174,7 +174,7 @@ void PeripheralWinrt::GetCharacteristic(
     auto it = cachedServices.find(serviceUuid);
     if (it != cachedServices.end())
     {
-        auto& cachedService = it->second;
+        auto cachedService = it->second;
         auto cit = cachedService.characterisitics.find(characteristicUuid);
         if (cit != cachedService.characterisitics.end())
         {
@@ -206,11 +206,11 @@ void PeripheralWinrt::GetDescriptorFromCharacteristic(
     std::function<void(std::optional<GattDescriptor>)> callback)
 {
     characteristic.GetDescriptorsForUuidAsync(descriptorUuid, BluetoothCacheMode::Cached)
-        .Completed([=](IAsyncOperation<GattDescriptorsResult> result, auto& status) {
+        .Completed([=](IAsyncOperation<GattDescriptorsResult> result, auto status) {
             if (status == AsyncStatus::Completed)
             {
-                auto& descriptors = result.GetResults();
-                auto& descriptor = descriptors.Descriptors().First();
+                auto descriptors = result.GetResults();
+                auto descriptor = descriptors.Descriptors().First();
                 if (descriptor.HasCurrent())
                 {
                     GattDescriptor d = descriptor.Current();
@@ -243,7 +243,7 @@ void PeripheralWinrt::GetDescriptor(winrt::guid serviceUuid, winrt::guid charact
     auto it = cachedServices.find(serviceUuid);
     if (it != cachedServices.end())
     {
-        auto& cachedService = it->second;
+        auto cachedService = it->second;
         auto cit = cachedService.characterisitics.find(characteristicUuid);
         if (cit != cachedService.characterisitics.end())
         {

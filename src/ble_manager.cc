@@ -24,7 +24,7 @@ template <typename O, typename M, class... Types> auto bind2(O* object, M method
     return std::bind(method, object, std::placeholders::_1, std::placeholders::_2, args...);
 }
 
-#define LOGE(message, ...) printf(__FUNCTION__ ": " message "\n", __VA_ARGS__)
+#define LOGE(message, ...) printf("WINRT BLE API::BLE MANAGER:: " __FUNCTION__ ": " message "\n", __VA_ARGS__)
 
 #define CHECK_DEVICE()                                     \
     if (mDeviceMap.find(uuid) == mDeviceMap.end())         \
@@ -42,21 +42,29 @@ template <typename O, typename M, class... Types> auto bind2(O* object, M method
     }                                                \
     BluetoothLEDevice& _device = *peripheral.device;
 
-#define CHECK_RESULT(_result)                            \
-    if (!_result)                                        \
-    {                                                    \
-        LOGE("result is null");                          \
-        return;                                          \
-    }                                                    \
-    auto _commStatus = _result.Status();                 \
-    if (_commStatus != GattCommunicationStatus::Success) \
-    {                                                    \
-        LOGE("communication status: %d", _commStatus);   \
-        return;                                          \
+template <class T>
+bool CHECK_RESULT(T _result)
+{
+    if (!_result)
+    {
+        LOGE("result is null");
+        return false;
+    } else {
+        auto _commStatus = _result.Status();
+        auto _protError  = _result.ProtocolError();
+        if (_commStatus != GattCommunicationStatus::Success) 
+        {
+            LOGE("ommunication status: %d", _commStatus);
+            LOGE("protocol error: %d", _protError);
+            return false;
+        }
     }
 
+    return true;
+}
+
 #define FOR(object, vector)       \
-    auto& _vector = vector;       \
+    auto _vector = vector;       \
     if (!_vector)                 \
     {                             \
         LOGE(#vector " is null"); \
@@ -72,10 +80,10 @@ BLEManager::BLEManager(const Napi::Value& receiver, const Napi::Function& callba
     auto onRadio = std::bind(&BLEManager::OnRadio, this, std::placeholders::_1);
     mWatcher.Start(onRadio);
     mAdvertismentWatcher.ScanningMode(BluetoothLEScanningMode::Active);
-    auto onReceived = bind2(this, &BLEManager::OnScanResult);
+    auto onReceived  = bind2(this, &BLEManager::OnScanResult);
     mReceivedRevoker = mAdvertismentWatcher.Received(winrt::auto_revoke, onReceived);
-    auto onStopped = bind2(this, &BLEManager::OnScanStopped);
-    mStoppedRevoker = mAdvertismentWatcher.Stopped(winrt::auto_revoke, onStopped);
+    auto onStopped   = bind2(this, &BLEManager::OnScanStopped);
+    mStoppedRevoker  = mAdvertismentWatcher.Stopped(winrt::auto_revoke, onStopped);
 }
 
 const char* adapterStateToString(AdapterState state)
@@ -118,8 +126,8 @@ void BLEManager::Scan(const std::vector<winrt::guid>& serviceUUIDs, bool allowDu
     mAllowDuplicates = allowDuplicates;
     BluetoothLEAdvertisementFilter filter = BluetoothLEAdvertisementFilter();
     BluetoothLEAdvertisement advertisment = BluetoothLEAdvertisement();
-    auto& services = advertisment.ServiceUuids();
-    for (auto& uuid : serviceUUIDs)
+    auto services = advertisment.ServiceUuids();
+    for (auto uuid : serviceUUIDs)
     {
         services.Append(uuid);
     }
@@ -148,7 +156,7 @@ void BLEManager::OnScanResult(BluetoothLEAdvertisementWatcher watcher,
     else
     {
         PeripheralWinrt& peripheral = mDeviceMap[uuid];
-        peripheral.Update(rssi, args.Advertisement(), advertismentType);
+        peripheral.Update(rssi, args.Advertisement());
         if (mAllowDuplicates || mAdvertismentMap.find(uuid) == mAdvertismentMap.end())
         {
             mAdvertismentMap.insert(uuid);
@@ -179,8 +187,7 @@ bool BLEManager::Connect(const std::string& uuid)
     if (!peripheral.device.has_value())
     {
         auto completed = bind2(this, &BLEManager::OnConnected, uuid);
-        BluetoothLEDevice::FromBluetoothAddressAsync(peripheral.bluetoothAddress)
-            .Completed(completed);
+        BluetoothLEDevice::FromBluetoothAddressAsync(peripheral.bluetoothAddress).Completed(completed);
     }
     else
     {
@@ -194,7 +201,7 @@ void BLEManager::OnConnected(IAsyncOperation<BluetoothLEDevice> asyncOp, AsyncSt
 {
     if (status == AsyncStatus::Completed)
     {
-        BluetoothLEDevice& device = asyncOp.GetResults();
+        BluetoothLEDevice device = asyncOp.GetResults();
         // device can be null if the connection failed
         if (device)
         {
@@ -271,25 +278,32 @@ void BLEManager::OnServicesDiscovered(IAsyncOperation<GattDeviceServicesResult> 
                                       AsyncStatus status, const std::string uuid,
                                       const std::vector<winrt::guid> serviceUUIDs)
 {
+    std::vector<std::string> serviceUuids;
     if (status == AsyncStatus::Completed)
-    {
-        GattDeviceServicesResult& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        std::vector<std::string> serviceUuids;
-        FOR(service, result.Services())
+    { 
+        GattDeviceServicesResult result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            auto id = service.Uuid();
-            if (inFilter(serviceUUIDs, id))
+            FOR(service, result.Services())
             {
-                serviceUuids.push_back(toStr(id));
+                auto id = service.Uuid();
+                if (inFilter(serviceUUIDs, id))
+                {
+                    serviceUuids.push_back(toStr(id));
+                }
             }
         }
-        mEmit.ServicesDiscovered(uuid, serviceUuids);
+        else
+        {
+            LOGE("GattDeviceServicesResult:: failed to discover any services.");
+        }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus failed: %d", status);
     }
+
+    mEmit.ServicesDiscovered(uuid, serviceUuids);
 }
 
 bool BLEManager::DiscoverIncludedServices(const std::string& uuid, const winrt::guid& serviceUuid,
@@ -320,25 +334,32 @@ void BLEManager::OnIncludedServicesDiscovered(IAsyncOperation<GattDeviceServices
                                               const std::string serviceId,
                                               const std::vector<winrt::guid> serviceUUIDs)
 {
+    std::vector<std::string> servicesUuids;
     if (status == AsyncStatus::Completed)
     {
-        auto& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        std::vector<std::string> servicesUuids;
-        FOR(service, result.Services())
+        auto result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            auto id = service.Uuid();
-            if (inFilter(serviceUUIDs, id))
+            FOR(service, result.Services())
             {
-                servicesUuids.push_back(toStr(id));
+                auto id = service.Uuid();
+                if (inFilter(serviceUUIDs, id))
+                {
+                    servicesUuids.push_back(toStr(id));
+                }
             }
         }
-        mEmit.IncludedServicesDiscovered(uuid, serviceId, servicesUuids);
+        else
+        {
+            LOGE("GattDeviceServicesResult:: Failed to discover included services.");
+        }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus status: %d", status);
     }
+
+    mEmit.IncludedServicesDiscovered(uuid, serviceId, servicesUuids);
 }
 
 bool BLEManager::DiscoverCharacteristics(const std::string& uuid, const winrt::guid& serviceUuid,
@@ -369,26 +390,33 @@ void BLEManager::OnCharacteristicsDiscovered(IAsyncOperation<GattCharacteristics
                                              const std::string serviceId,
                                              const std::vector<winrt::guid> characteristicUUIDs)
 {
+    std::vector<std::pair<std::string, std::vector<std::string>>> characteristicsUuids;
     if (status == AsyncStatus::Completed)
     {
-        auto& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        std::vector<std::pair<std::string, std::vector<std::string>>> characteristicsUuids;
-        FOR(characteristic, result.Characteristics())
+        auto result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            auto id = characteristic.Uuid();
-            if (inFilter(characteristicUUIDs, id))
+            FOR(characteristic, result.Characteristics())
             {
-                auto props = characteristic.CharacteristicProperties();
-                characteristicsUuids.push_back({ toStr(id), toPropertyArray(props) });
+                auto id = characteristic.Uuid();
+                if (inFilter(characteristicUUIDs, id))
+                {
+                    auto props = characteristic.CharacteristicProperties();
+                    characteristicsUuids.push_back({ toStr(id), toPropertyArray(props) });
+                }
             }
         }
-        mEmit.CharacteristicsDiscovered(uuid, serviceId, characteristicsUuids);
+        else
+        {
+            LOGE("GattCharacteristicsResult:: Failed to discover any characteristics.");
+        }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus status: %d", status);
     }
+
+    mEmit.CharacteristicsDiscovered(uuid, serviceId, characteristicsUuids);
 }
 
 bool BLEManager::Read(const std::string& uuid, const winrt::guid& serviceUuid,
@@ -420,27 +448,36 @@ void BLEManager::OnRead(IAsyncOperation<GattReadResult> asyncOp, AsyncStatus sta
                         const std::string uuid, const std::string serviceId,
                         const std::string characteristicId)
 {
+    Data data(0);
     if (status == AsyncStatus::Completed)
     {
-        GattReadResult& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        auto& value = result.Value();
-        if (value)
+        GattReadResult result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            auto& reader = DataReader::FromBuffer(value);
-            Data data(reader.UnconsumedBufferLength());
-            reader.ReadBytes(data);
-            mEmit.Read(uuid, serviceId, characteristicId, data, false);
+            auto value = result.Value();
+            if (value)
+            {
+                auto reader = DataReader::FromBuffer(value);
+                Data data(reader.UnconsumedBufferLength());
+                reader.ReadBytes(data);
+                mEmit.Read(uuid, serviceId, characteristicId, data, false);
+            }
+            else
+            {
+                LOGE("GattReadResult::Value is null");
+            }
         }
         else
         {
-            LOGE("value is null");
+            LOGE("GattReadResult:: failed to read");
         }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus failed: %d", status);
     }
+
+    mEmit.Read(uuid, serviceId, characteristicId, data, false);
 }
 
 bool BLEManager::Write(const std::string& uuid, const winrt::guid& serviceUuid,
@@ -458,7 +495,7 @@ bool BLEManager::Write(const std::string& uuid, const winrt::guid& serviceUuid,
                     std::string characteristicId = toStr(characteristicUuid);
                     auto writer = DataWriter();
                     writer.WriteBytes(data);
-                    auto& value = writer.DetachBuffer();
+                    auto value = writer.DetachBuffer();
                     GattWriteOption option = withoutResponse ? GattWriteOption::WriteWithoutResponse
                                                              : GattWriteOption::WriteWithResponse;
                     characteristic->WriteValueWithResultAsync(value, option)
@@ -484,7 +521,10 @@ void BLEManager::OnWrite(IAsyncOperation<GattWriteResult> asyncOp, AsyncStatus s
     }
     else
     {
-        LOGE("status: %d", status);
+        auto errorCode = asyncOp.ErrorCode().value;
+
+        LOGE("status lol: %d", status);
+        LOGE("GattWriteError: %d", errorCode);
     }
 }
 
@@ -587,7 +627,7 @@ void BLEManager::OnNotify(IAsyncOperation<GattWriteResult> asyncOp, AsyncStatus 
 void BLEManager::OnValueChanged(GattCharacteristic characteristic,
                                 const GattValueChangedEventArgs& args, std::string deviceUuid)
 {
-    auto& reader = DataReader::FromBuffer(args.CharacteristicValue());
+    auto reader = DataReader::FromBuffer(args.CharacteristicValue());
     Data data(reader.UnconsumedBufferLength());
     reader.ReadBytes(data);
     auto characteristicUuid = toStr(characteristic.Uuid());
@@ -626,21 +666,28 @@ void BLEManager::OnDescriptorsDiscovered(IAsyncOperation<GattDescriptorsResult> 
                                          const std::string serviceId,
                                          const std::string characteristicId)
 {
+    std::vector<std::string> descriptorUuids;
     if (status == AsyncStatus::Completed)
     {
-        auto& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        std::vector<std::string> descriptorUuids;
-        FOR(descriptor, result.Descriptors())
+        auto result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            descriptorUuids.push_back(toStr(descriptor.Uuid()));
+            FOR(descriptor, result.Descriptors())
+            {
+                descriptorUuids.push_back(toStr(descriptor.Uuid()));
+            }
         }
-        mEmit.DescriptorsDiscovered(uuid, serviceId, characteristicId, descriptorUuids);
+        else
+        {
+            LOGE("GattDescriptorsResult:: Failed to discover any descryptors.");
+        }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus failed: %d", status);
     }
+
+    mEmit.DescriptorsDiscovered(uuid, serviceId, characteristicId, descriptorUuids);
 }
 
 bool BLEManager::ReadValue(const std::string& uuid, const winrt::guid& serviceUuid,
@@ -674,27 +721,36 @@ void BLEManager::OnReadValue(IAsyncOperation<GattReadResult> asyncOp, AsyncStatu
                              const std::string uuid, const std::string serviceId,
                              const std::string characteristicId, const std::string descriptorId)
 {
+    Data data(0);
     if (status == AsyncStatus::Completed)
     {
-        GattReadResult& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        auto& value = result.Value();
-        if (value)
+        GattReadResult result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            auto& reader = DataReader::FromBuffer(value);
-            Data data(reader.UnconsumedBufferLength());
-            reader.ReadBytes(data);
-            mEmit.ReadValue(uuid, serviceId, characteristicId, descriptorId, data);
+            auto value = result.Value();
+            if (value)
+            {
+                auto reader = DataReader::FromBuffer(value);
+                Data data(reader.UnconsumedBufferLength());
+                reader.ReadBytes(data);
+                mEmit.ReadValue(uuid, serviceId, characteristicId, descriptorId, data);
+            }
+            else
+            {
+                LOGE("GattReadResult::Value is null");
+            }
         }
         else
         {
-            LOGE("value is null");
+            LOGE("GattReadResult:: failed to read");
         }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus failed: %d", status);
     }
+
+    mEmit.ReadValue(uuid, serviceId, characteristicId, descriptorId, data);
 }
 
 bool BLEManager::WriteValue(const std::string& uuid, const winrt::guid& serviceUuid,
@@ -712,8 +768,8 @@ bool BLEManager::WriteValue(const std::string& uuid, const winrt::guid& serviceU
                 std::string descriptorId = toStr(descriptorUuid);
                 auto writer = DataWriter();
                 writer.WriteBytes(data);
-                auto& value = writer.DetachBuffer();
-                auto& asyncOp = descriptor->WriteValueWithResultAsync(value);
+                auto value = writer.DetachBuffer();
+                auto asyncOp = descriptor->WriteValueWithResultAsync(value);
                 asyncOp.Completed(bind2(this, &BLEManager::OnWriteValue, uuid, serviceId,
                                         characteristicId, descriptorId));
             }
@@ -754,27 +810,36 @@ bool BLEManager::ReadHandle(const std::string& uuid, int handle)
 void BLEManager::OnReadHandle(IAsyncOperation<GattReadResult> asyncOp, AsyncStatus status,
                               const std::string uuid, const int handle)
 {
+    Data data(0);
     if (status == AsyncStatus::Completed)
     {
-        GattReadResult& result = asyncOp.GetResults();
-        CHECK_RESULT(result);
-        auto& value = result.Value();
-        if (value)
+        GattReadResult result = asyncOp.GetResults();
+        if(CHECK_RESULT(result))
         {
-            auto& reader = DataReader::FromBuffer(value);
-            Data data(reader.UnconsumedBufferLength());
-            reader.ReadBytes(data);
-            mEmit.ReadHandle(uuid, handle, data);
+            auto value = result.Value();
+            if (value)
+            {
+                auto reader = DataReader::FromBuffer(value);
+                Data data(reader.UnconsumedBufferLength());
+                reader.ReadBytes(data);
+                mEmit.ReadHandle(uuid, handle, data);
+            }
+            else
+            {
+                LOGE("GattReadResult::Value is null");
+            }
         }
         else
         {
-            LOGE("value is null");
+            LOGE("GattReadResult:: failed to read");
         }
     }
     else
     {
-        LOGE("status: %d", status);
+        LOGE("AsyncStatus failed: %d", status);
     }
+
+    mEmit.ReadHandle(uuid, handle, data);
 }
 
 bool BLEManager::WriteHandle(const std::string& uuid, int handle, Data data)
